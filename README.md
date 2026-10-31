@@ -58,7 +58,7 @@ make
 The default build is a headless demonstration scene — a night street of
 warehouses and a watchtower under sodium light, an operator crossing it
 on foot and by grapple, and a patrolling guard — which simulates and
-renders 120 frames, then writes its outputs and prints a cost ledger:
+renders 900 frames, then writes its outputs and prints a cost ledger:
 
 - `frame.ppm` — the final frame, upscaled to 960×540
 - `audio.wav` — the synthesized mix: lamp hum, footsteps, the grapple
