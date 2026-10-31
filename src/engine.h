@@ -104,7 +104,7 @@ typedef struct {
 } Pose;
 void render_humanoid(FB *fb, const Camera *cam, const Humanoid *h,
                      V3 pos, float yaw, const Pose *pose,
-                     const Tex *tex, float tr, float tg, float tb,
+                     const Tex *texset, float tr, float tg, float tb,
                      const LightRig *rig);
 
 /* ---------- animation ---------- */
@@ -149,6 +149,32 @@ typedef struct {
 bool los_clear(V3 a, V3 b, const AABB *world, int n);   /* XZ segment test */
 void guard_update(Guard *g, const V3 *waypoints, int nw, V3 player,
                   float player_noise, const AABB *world, int n, float dt);
+
+/* ---------- asset loading (assets.c) ---------- */
+Mesh mesh_load_obj(const char *path);          /* empty mesh on failure */
+int tex_load_ppm(const char *path, Tex *out);  /* 0 ok, -1 failure; P3+P6 */
+
+/* ---------- live audio (streaming synth for device backends) ---------- */
+#define AU_MAX_VOICES 32
+typedef struct {
+    int active, kind;              /* kind: 0 tone, 1 noise */
+    float t, dur, f0, f1, gain, phase, lp;
+    uint32_t rng;
+} LiveVoice;
+typedef struct {
+    LiveVoice voices[AU_MAX_VOICES];
+    float time;
+    int hum_on;
+} AudioLive;
+void au_live_init(AudioLive *a);
+void au_live_tone(AudioLive *a, float dur, float f0, float f1, float gain);
+void au_live_noise(AudioLive *a, float dur, float gain, uint32_t seed);
+void au_live_footstep(AudioLive *a, int wet);
+void au_live_grapple(AudioLive *a);
+void au_live_render(AudioLive *a, float *out, int n); /* mono, AU_RATE */
+
+/* camera collision for the third-person rig */
+V3 camera_resolve(V3 cam, const AABB *world, int n, float radius);
 
 /* ---------- persistence ---------- */
 typedef struct {

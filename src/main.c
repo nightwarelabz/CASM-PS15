@@ -59,7 +59,11 @@ int main(void) {
     Mesh platform = mesh_box(3, 0.5f, 3);
     Mesh lamp_head = mesh_box(0.5f, 0.3f, 0.5f);
     Mesh pole = mesh_box(0.18f, 4.4f, 0.18f);
-    Mesh crate = mesh_box(1.2f, 1.2f, 1.2f);
+    Mesh crate = mesh_load_obj("assets/crate.obj");
+    int have_crate = crate.nv > 0;
+    if (!have_crate) crate = mesh_box(1.2f, 1.2f, 1.2f);
+    Tex brick_file;
+    int have_brick_file = (tex_load_ppm("assets/brick.ppm", &brick_file) == 0);
     LightRig rig = { LAMPS, 3, 0.16f, 0.19f, 0.28f };
 
     Body player = { v3(-6, 0, 9), v3(0, 0, 0), 0.35f, 1.8f, false, false, v3(0, 0, 0), 0 };
@@ -152,7 +156,8 @@ int main(void) {
         fb_sky(fb);
         fb_clear_depth(fb);
         render_mesh(fb, &cam, &ground, v3(0, 0, 35), 0, &tex[TEX_CONCRETE], 1, 1, 1, &rig);
-        render_mesh(fb, &cam, &ware1, v3(-4, 0, 22), 0, &tex[TEX_BRICK], 1, 1, 1, &rig);
+        render_mesh(fb, &cam, &ware1, v3(-4, 0, 22), 0,
+                    have_brick_file ? &brick_file : &tex[TEX_BRICK], 1, 1, 1, &rig);
         render_mesh(fb, &cam, &ware2, v3(10, 0, 27.5f), 0, &tex[TEX_METAL], 0.9f, 0.92f, 1, &rig);
         render_mesh(fb, &cam, &tower, v3(-2, 0, 33.4f), 0, &tex[TEX_METAL], 0.8f, 0.8f, 0.85f, &rig);
         render_mesh(fb, &cam, &platform, v3(-2, 11, 32.5f), 0, &tex[TEX_METAL], 0.8f, 0.8f, 0.85f, &rig);
@@ -168,11 +173,11 @@ int main(void) {
             : anim_sample(&CLIP_IDLE, t);
         if (player.grappling) { op.arm_r = -2.4f; op.arm_l = -2.2f; }
         render_humanoid(fb, &cam, &oper, player.pos, player_yaw, &op,
-                        &tex[TEX_CAMO], 0.85f, 0.9f, 0.85f, &rig);
+                        tex, 0.85f, 0.9f, 0.85f, &rig);
         Pose gp = anim_sample(&CLIP_WALK, t * 1.4f);
         if (guard.wait > 0) gp = anim_sample(&CLIP_IDLE, t);
         render_humanoid(fb, &cam, &soldier, guard.pos, guard.yaw, &gp,
-                        &tex[TEX_CAMO], 1.05f, 0.95f, 0.85f, &rig);
+                        tex, 1.05f, 0.95f, 0.85f, &rig);
 
         /* lamp glows */
         for (int i = 0; i < 3; i++) {
@@ -230,6 +235,9 @@ int main(void) {
            mix.len, alarmed ? ", alarm" : "");
     printf("persistence: save=%s load-verify=%s\n",
            save_ok ? "ok" : "FAIL", load_ok ? "ok" : "FAIL");
+    printf("assets:     crate.obj=%s (%d verts) brick.ppm=%s\n",
+           have_crate ? "loaded" : "FALLBACK", crate.nv,
+           have_brick_file ? "loaded" : "FALLBACK");
     printf("outputs:    frame.ppm (960x540), audio.wav, save.dat\n");
 
     fb_free(fb);
@@ -238,7 +246,8 @@ int main(void) {
     mesh_free(&ground); mesh_free(&ware1); mesh_free(&ware2);
     mesh_free(&tower); mesh_free(&platform); mesh_free(&lamp_head);
     mesh_free(&pole); mesh_free(&crate);
+    if (have_brick_file) free(brick_file.px);
     texgen_free(tex);
     mixer_free(&mix);
-    return (save_ok && load_ok && grapple_fired) ? 0 : 2;
+    return (save_ok && load_ok && grapple_fired && have_crate && have_brick_file) ? 0 : 2;
 }

@@ -28,9 +28,10 @@ Zero dependencies beyond libc and libm.
 ## Architecture
 
 C owns the engine. Assembly owns only the inner loops that run millions
-of times per frame — currently the framebuffer fill
-(`src/fill_x86_64.s`) — and every assembly routine has a portable C
-equivalent, so the engine builds and runs correctly on any target.
+of times per frame — currently the framebuffer fill, in x86_64
+(`src/fill_x86_64.s`) and AArch64 (`src/fill_arm64.S`) forms — and
+every assembly routine has a portable C equivalent, so the engine
+builds and runs correctly on any target.
 
 | Module | Contents |
 | --- | --- |
@@ -43,6 +44,11 @@ equivalent, so the engine builds and runs correctly on any target.
 | `audio.c` | Synthesized audio mixer — tones, filtered noise, footsteps, lamp hum — with WAV export |
 | `percept.c` | Guard perception: line-of-sight tests, waypoint patrols, noise-driven alert levels |
 | `persist.c` | Checksummed save states with corruption detection |
+| `assets.c` | File asset loading: Wavefront OBJ meshes, PPM textures (P3/P6) |
+| `platform_x11.c` / `platform_macos.m` | Window, input and presentation: X11 on Linux, Cocoa on macOS |
+| `audio_device_linux.c` / `audio_device_macos.c` | Live audio output: ALSA on Linux, CoreAudio on macOS |
+| `play.c` | The windowed, playable host (first/third person) |
+| `fill_x86_64.s` / `fill_arm64.S` | The assembly fill loop, per architecture, each with a C equivalent |
 
 All randomness runs through a SplitMix64 generator, so a given build
 produces the same frames, the same audio mix, and the same simulation
@@ -52,8 +58,18 @@ results on every machine.
 
 ```sh
 make
-./casm-ps15
+./casm-ps15        # headless demonstration + ledger
+./casm-ps15-play   # windowed, playable
 ```
+
+In the windowed host: **WASD + mouse** move and look, **Shift** sprint,
+**Ctrl** crouch, **Space** jump, **E** grapple (press fires at the
+lamp/tower in the view cone, hold keeps the rope, release detaches),
+**V** toggles first/third person, **Esc** quits. Live synthesized audio
+(lamp hum, footsteps, grapple, alarm) plays through the platform audio
+device; the third-person camera is collision-resolved against the
+world. File assets under `assets/` (an OBJ crate, a PPM brick texture)
+are loaded at startup, with procedural generation as the fallback.
 
 The default build is a headless demonstration scene — a night street of
 warehouses and a watchtower under sodium light, an operator crossing it
@@ -73,4 +89,6 @@ on whatever hardware runs it.
 
 In active development. The renderer and the core simulation modules
 (raster, render, animation, physics, audio, perception, persistence)
-are working and exercised end-to-end by the demonstration scene.
+are working and exercised end-to-end by the demonstration scene, and
+the windowed host (`casm-ps15-play`) is playable on Linux (X11) and
+macOS (Cocoa) with live audio on both platforms.
