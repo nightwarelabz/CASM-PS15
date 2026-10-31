@@ -1,4 +1,6 @@
 # CASM-PS15
+<img width="2688" height="864" alt="media-generation-casm-ps15-banner-2026-0-d36aab50-7839-4648-863a-359becf32907" src="https://github.com/user-attachments/assets/530b6e7c-72d9-4c4f-a507-0e9ecfd6ef9d" />
+
 
 A from-scratch game engine written in C with hand-written assembly in the
 hot loops, built around a software renderer that targets the **PS1.5**
