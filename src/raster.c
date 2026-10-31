@@ -61,20 +61,28 @@ void raster_tri(FB *fb, SVert a, SVert b, SVert c,
     if (maxx >= fb->w) maxx = fb->w - 1;
     if (maxy >= fb->h) maxy = fb->h - 1;
     float fog = clampf(fogz / 70.0f, 0, 0.78f);
+    /* Perspective-correct UVs (the PS1.5 step past the PS1): u/z, v/z
+     * and 1/z are linear in screen space; plain u/v are not, which is
+     * what bends brick courses and floor seams under camera movement.
+     * Vertex positions stay snapped — the wobble is geometry-only. */
+    float aiz = 1.0f / a.z, biz = 1.0f / b.z, ciz = 1.0f / c.z;
+    float auz = a.u * aiz, buz = b.u * biz, cuz = c.u * ciz;
+    float avz = a.v * aiz, bvz = b.v * biz, cvz = c.v * ciz;
     for (int y = miny; y <= maxy; y++) {
         for (int x = minx; x <= maxx; x++) {
             float w0 = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / d;
             float w1 = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / d;
             float w2 = 1.0f - w0 - w1;
             if (w0 < 0 || w1 < 0 || w2 < 0) continue;
-            float z = w0 * a.z + w1 * b.z + w2 * c.z;
+            float invz = w0 * aiz + w1 * biz + w2 * ciz;
+            float z = 1.0f / invz;
             int idx = y * fb->w + x;
             if (z >= fb->zb[idx]) continue;
             float light = w0 * a.light + w1 * b.light + w2 * c.light;
             int r, g, bl;
-            if (tex) {                        /* affine UV — the PS1 way */
-                float u = w0 * a.u + w1 * b.u + w2 * c.u;
-                float v = w0 * a.v + w1 * b.v + w2 * c.v;
+            if (tex) {                        /* perspective-correct UV */
+                float u = (w0 * auz + w1 * buz + w2 * cuz) * z;
+                float v = (w0 * avz + w1 * bvz + w2 * cvz) * z;
                 int tx = (int)(u * tw) % tw; if (tx < 0) tx += tw;
                 int ty = (int)(v * th) % th; if (ty < 0) ty += th;
                 uint32_t t = tex[ty * tw + tx];
