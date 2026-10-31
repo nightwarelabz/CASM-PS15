@@ -20,6 +20,38 @@ static bool overlaps(const Body *b, const AABB *a, V3 p) {
            p.y < a->max.y && p.y + b->height > a->min.y;
 }
 
+/* Push a camera sphere out of world AABBs (smallest penetration axis),
+ * and keep it off the ground. Used by the third-person rig. */
+V3 camera_resolve(V3 cam, const AABB *world, int n, float radius) {
+    for (int i = 0; i < n; i++) {
+        const AABB *a = &world[i];
+        float nx = clampf(cam.x, a->min.x, a->max.x);
+        float ny = clampf(cam.y, a->min.y, a->max.y);
+        float nz = clampf(cam.z, a->min.z, a->max.z);
+        V3 d = v3(cam.x - nx, cam.y - ny, cam.z - nz);
+        float dist = v3_len(d);
+        if (dist >= radius) continue;
+        if (dist > 1e-5f) {
+            cam = v3_add(v3(nx, ny, nz), v3_scale(v3_norm(d), radius));
+        } else {
+            /* centre inside the box: exit through the thinnest wall */
+            float exits[6] = { cam.x - a->min.x, a->max.x - cam.x,
+                               cam.y - a->min.y, a->max.y - cam.y,
+                               cam.z - a->min.z, a->max.z - cam.z };
+            int best = 0;
+            for (int k = 1; k < 6; k++) if (exits[k] < exits[best]) best = k;
+            if (best == 0) cam.x = a->min.x - radius;
+            if (best == 1) cam.x = a->max.x + radius;
+            if (best == 2) cam.y = a->min.y - radius;
+            if (best == 3) cam.y = a->max.y + radius;
+            if (best == 4) cam.z = a->min.z - radius;
+            if (best == 5) cam.z = a->max.z + radius;
+        }
+    }
+    if (cam.y < 0.4f) cam.y = 0.4f;
+    return cam;
+}
+
 void grapple_fire(Body *b, V3 anchor) {
     b->grappling = true;
     b->grapple_anchor = anchor;

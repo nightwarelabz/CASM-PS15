@@ -110,7 +110,7 @@ static void rot_x(V3 *p, float ang) {
 
 void render_humanoid(FB *fb, const Camera *cam, const Humanoid *h,
                      V3 pos, float yaw, const Pose *pose,
-                     const Tex *tex, float tr, float tg, float tb,
+                     const Tex *texset, float tr, float tg, float tb,
                      const LightRig *rig) {
     const struct { V3 joint; float ang; } J[PART_COUNT] = {
         { v3(0, 0.84f, 0), 0 },
@@ -138,6 +138,8 @@ void render_humanoid(FB *fb, const Camera *cam, const Humanoid *h,
             }
             tmp[i].p = v3_add(p, J[part].joint);
         }
-        render_verts(fb, cam, tmp, m->tris, m->nt, pos, yaw, tex, tr, tg, tb, rig);
+        const Tex *part_tex = (part == PART_HEAD) ? &texset[TEX_FACE]
+                                                  : &texset[TEX_CAMO];
+        render_verts(fb, cam, tmp, m->tris, m->nt, pos, yaw, part_tex, tr, tg, tb, rig);
     }
 }
