@@ -39,7 +39,10 @@ casm-ps15-play: $(PLAY_SRC) $(CORE) src/engine.h src/platform.h
 run: casm-ps15
 	./casm-ps15
 
+vistest: tools/vistest.c $(CORE) src/engine.h
+	$(CC) $(CFLAGS) -Isrc -o $@ tools/vistest.c $(CORE) -lm
+
 clean:
-	rm -f casm-ps15 casm-ps15-play frame.ppm frame.png audio.wav save.dat
+	rm -f casm-ps15 casm-ps15-play vistest frame.ppm frame.png audio.wav save.dat
 
 .PHONY: clean run all
