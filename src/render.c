@@ -663,7 +663,10 @@ void render_viewmodel_ex(FB *fb, const Camera *cam, const Viewmodel *vm,
     V3 probe = v3_add(cam->pos, v3_scale(fwd, 0.45f));
     float lr, lg, lb;
     eval_light_at(rig, cam->pos, probe, v3(0, 0.8f, 0.6f), RF_NONE, &lr, &lg, &lb);
-    lr = fmaxf(lr, 0.34f); lg = fmaxf(lg, 0.36f); lb = fmaxf(lb, 0.46f);
+    /* Seated in the scene's grade: a small floor keeps the weapon readable
+     * in shadow, but the probe of the real light field leads — bright
+     * stainless under a full floor blew out to white at night. */
+    lr = fmaxf(lr, 0.15f); lg = fmaxf(lg, 0.16f); lb = fmaxf(lb, 0.21f);
 
     float rec = clampf(recoil, 0.0f, 1.0f);
     float kick = sinf(rec * PS15_PI);
@@ -683,11 +686,11 @@ void render_viewmodel_ex(FB *fb, const Camera *cam, const Viewmodel *vm,
     float flash = (rec > 0.65f) ? (rec - 0.65f) * 3.2f : 0.0f;
     PointLight vlights[1] = {
         { v3(-0.24f, 0.38f, 0.25f), 1.6f,
-          lr * 0.95f + flash * 1.4f, lg * 0.90f + flash * 0.95f, lb * 0.85f + flash * 0.45f }
+          lr * 0.55f + flash * 1.4f, lg * 0.52f + flash * 0.95f, lb * 0.50f + flash * 0.45f }
     };
     LightRig vrig = {
         vlights, 1,
-        lr * 0.52f, lg * 0.54f, lb * 0.60f,
+        lr * 0.34f, lg * 0.35f, lb * 0.40f,
         NULL, 0,
         0, 0, 0, 100.0f
     };
@@ -707,7 +710,7 @@ void render_viewmodel_ex(FB *fb, const Camera *cam, const Viewmodel *vm,
     render_mesh_ex(fb, &vcam, &vm->pistol_frame, ofs, 0.0f,
                    tilt, 1.0f, &texset[TEX_WEAPON], 1.0f, 1.0f, 1.0f, &vrig, BLEND_OPAQUE, fl);
     render_mesh_ex(fb, &vcam, &vm->pistol_slide, slide_ofs, 0.0f,
-                   tilt, 1.0f, &texset[TEX_WEAPON], 1.18f, 1.18f, 1.24f, &vrig, BLEND_OPAQUE, fl | RF_WET_SPEC);
+                   tilt, 1.0f, &texset[TEX_WEAPON], 1.0f, 1.0f, 1.04f, &vrig, BLEND_OPAQUE, fl | RF_WET_SPEC);
 
     if (rec > 0.68f) {
         V3 mpos = v3(0.060f + bx, -0.075f + by + kick * 0.08f, 0.78f + bz);
