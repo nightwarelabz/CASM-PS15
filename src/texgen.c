@@ -497,9 +497,12 @@ void texgen_all(Tex out[TEX_COUNT]) {
                         out[TEX_WEAPON].px[idx] = pack(ch, ch + 2, ch + 6);
                     }
                 } else {
-                    int sv = 186 + (py * 3) / 8 + grain - ((rear_serr || front_serr) ? 72 : 0) + (top_chamfer ? 44 : 0);
-                    if (sv > 248) sv = 248;
-                    if (sv < 42) sv = 42;
+                    /* Brushed gunmetal, not bright stainless: at 186-248
+                     * the slide clipped to a white slab under any key
+                     * light strong enough to read by. */
+                    int sv = 118 + (py * 3) / 8 + grain - ((rear_serr || front_serr) ? 52 : 0) + (top_chamfer ? 30 : 0);
+                    if (sv > 172) sv = 172;
+                    if (sv < 36) sv = 36;
                     out[TEX_WEAPON].px[idx] = pack(sv, sv + 2, sv + 6);
                 }
             } else if (x < 64) {
