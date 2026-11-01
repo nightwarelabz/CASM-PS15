@@ -137,6 +137,8 @@ typedef struct {
     bool          crt_scanlines;   /* Trinitron 25% odd-row phosphor scanlines */
     bool          visor_mode;      /* Crimson tactical night-optic visor filter */
     float         fov_scale;       /* focal-length multiplier (1.0 default, >1 zoom/portrait) */
+    bool          perpixel_light;  /* evaluate the light rig per pixel (modern tier);
+                                      false = classic per-vertex Gouraud */
 } RenderSettings;
 
 typedef struct {
@@ -147,8 +149,11 @@ typedef struct {
 } RenderStats;
 
 /* ---------- framebuffer / rasterizer ---------- */
-#define FB_W 480
+#define FB_W 480                /* PS1.5 tier internal resolution */
 #define FB_H 270
+#define FB_MODERN_W 960         /* modern tier: same PS1.5 treatment (snap, dither,
+                                   palette) at full display resolution */
+#define FB_MODERN_H 540
 #define TEX_MASK_BIT 0x80000000u  /* PS1 transparent texel mask bit */
 
 typedef struct { V3 pos; float yaw, pitch; } Camera;
@@ -174,6 +179,8 @@ typedef struct { float x, y, z, u, v, light; } SVert;
 typedef struct {
     float x, y, z, u, v;
     float lr, lg, lb;           /* per-vertex RGB Gouraud light (1.0 = neutral) */
+    float wx, wy, wz;           /* world-space position (per-pixel lighting) */
+    float nx, ny, nz;           /* world-space normal (per-pixel lighting) */
 } SVertEx;
 
 void raster_tri(FB *fb, SVert a, SVert b, SVert c,
@@ -204,7 +211,7 @@ void fb_dof(FB *fb, float focus_dist, float focus_range, float max_blur);
 uint32_t *fb_upscale2x(const FB *fb);
 uint32_t *fb_upscale2x_crt(const FB *fb);
 
-/* ---------- textures (procedural painted 64x64 + file PPM) ---------- */
+/* ---------- textures (procedural painted 128x128 + file PPM) ---------- */
 enum {
     TEX_BRICK,
     TEX_CONCRETE,
@@ -216,12 +223,12 @@ enum {
     TEX_HAZARD,
     TEX_GRATE,
     TEX_SHADOW,
-    TEX_PATCH,      /* 64x64 dedicated gold-bordered NSA eagle shoulder crest */
-    TEX_WEAPON,     /* 64x64 brushed steel slide, polymer grip & baffles */
-    TEX_WATER,      /* 64x64 tileable harbor canal waves & specular ripples */
-    TEX_BEAM,       /* 64x64 smooth volumetric searchlight & muzzle falloff */
-    TEX_TERMINAL,   /* 64x64 classified espionage CRT data terminal face */
-    TEX_INSIGNIA,   /* 64x64 Regime 3-bar banner/armband, trooper mask & mecha plate */
+    TEX_PATCH,      /* 128x128 dedicated gold-bordered NSA eagle shoulder crest */
+    TEX_WEAPON,     /* 128x128 brushed steel slide, polymer grip & baffles */
+    TEX_WATER,      /* 128x128 tileable harbor canal waves & specular ripples */
+    TEX_BEAM,       /* 128x128 smooth volumetric searchlight & muzzle falloff */
+    TEX_TERMINAL,   /* 128x128 classified espionage CRT data terminal face */
+    TEX_INSIGNIA,   /* 128x128 Regime 3-bar banner/armband, trooper mask & mecha plate */
     TEX_COUNT
 };
 typedef struct { int w, h; uint32_t *px; } Tex;
@@ -331,6 +338,27 @@ void render_water_plane(FB *fb, const Camera *cam, const Mesh *m,
                         float tr, float tg, float tb, const LightRig *rig,
                         BlendMode blend);
 float light_exposure_at(const LightRig *rig, V3 wp);
+/* The engine's single light equation (hemisphere ambient + moon + point
+ * pools + spot cones + wet specular + Fresnel rim). Evaluated per-vertex
+ * for the classic path and per-pixel for the modern path — same math, two
+ * sampling densities, so both tiers agree on the look. */
+void eval_light_at(const LightRig *rig, V3 cam_pos, V3 wp, V3 n,
+                   uint32_t flags, float *lr, float *lg, float *lb);
+/* Masked variant for the rasterizer's per-pixel path: bit i of pmask/smask
+ * clear means that point/spot light is out of range for the whole span and
+ * is skipped. A light beyond its range contributes exactly zero, so a
+ * correct mask never changes the image — it only skips dead work. Lights
+ * past index 31 are always evaluated. */
+void eval_light_at_masked(const LightRig *rig, V3 cam_pos, V3 wp, V3 n,
+                          uint32_t flags, uint32_t pmask, uint32_t smask,
+                          float *lr, float *lg, float *lb);
+/* Per-pixel lighting context for raster_tri_ex: set by the renderer before
+ * a mesh draw (rig + camera + per-mesh tint). NULL rig disables per-pixel
+ * evaluation and spans fall back to the interpolated vertex light. Legacy
+ * entry points (raster_tri) clear it. Only used when the framebuffer's
+ * perpixel_light setting is on and the triangle is not RF_UNLIT. */
+void raster_set_light_ctx(const LightRig *rig, V3 cam_pos,
+                          float tr, float tg, float tb);
 
 /* pose: joint angles in radians */
 typedef struct {

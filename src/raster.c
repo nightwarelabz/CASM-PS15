@@ -209,6 +209,18 @@ void ps15_span_abr64(const Span64 *s, int abr_mode) {
 static uint32_t WHITE_TEX64[64 * 64];
 static int white_tex_ready = 0;
 
+/* ---------- per-pixel lighting context (set per mesh draw) ------------ */
+static const LightRig *g_pp_rig = NULL;
+static V3    g_pp_cam;
+static float g_pp_tr = 1.0f, g_pp_tg = 1.0f, g_pp_tb = 1.0f;
+
+void raster_set_light_ctx(const LightRig *rig, V3 cam_pos,
+                          float tr, float tg, float tb) {
+    g_pp_rig = rig;
+    g_pp_cam = cam_pos;
+    g_pp_tr = tr; g_pp_tg = tg; g_pp_tb = tb;
+}
+
 /* ---------- framebuffer lifecycle & Bayer RGB555 DAC ------------------ */
 FB *fb_new(int w, int h) {
     if (!white_tex_ready) {
@@ -226,6 +238,7 @@ FB *fb_new(int w, int h) {
     fb->settings.affine_uv = false;
     fb->settings.wireframe = false;
     fb->settings.fov_scale = 1.0f;
+    fb->settings.perpixel_light = true;
     return fb;
 }
 
@@ -238,12 +251,14 @@ void fb_set_profile(FB *fb, GraphicProfile profile) {
             fb->settings.dither_mode = DITHER_BAYER555;
             fb->settings.filter_mode = FILTER_POINT;
             fb->settings.affine_uv = true;
+            fb->settings.perpixel_light = false;   /* authentic PS1 Gouraud */
             break;
         case GFX_PS15:
             fb->settings.snap_mode = SNAP_PS15;
             fb->settings.dither_mode = DITHER_BAYER555;
             fb->settings.filter_mode = FILTER_POINT;
             fb->settings.affine_uv = false;
+            fb->settings.perpixel_light = true;
             break;
         case GFX_PS2:
         default:
@@ -251,6 +266,7 @@ void fb_set_profile(FB *fb, GraphicProfile profile) {
             fb->settings.dither_mode = DITHER_RGB888;
             fb->settings.filter_mode = FILTER_BILINEAR;
             fb->settings.affine_uv = false;
+            fb->settings.perpixel_light = true;
             break;
     }
 }
@@ -283,9 +299,12 @@ uint32_t rgb555(int r, int g, int b, int x, int y) {
 uint32_t quantize_pixel(const FB *fb, int r, int g, int b, int x, int y) {
     if (fb->settings.dither_mode == DITHER_BAYER555)
         return rgb555(r, g, b, x, y);
-    if (r < 0) r = 0; if (r > 255) r = 255;
-    if (g < 0) g = 0; if (g > 255) g = 255;
-    if (b < 0) b = 0; if (b > 255) b = 255;
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
     if (fb->settings.dither_mode == DITHER_FLAT555) {
         return (((uint32_t)r & 0xF8u) << 16) |
                (((uint32_t)g & 0xF8u) << 8)  |
@@ -328,7 +347,8 @@ static inline uint32_t blend_ps1(const FB *fb, uint32_t bg,
 void fb_sky_cam(FB *fb, const Camera *cam) {
     float yaw = cam ? cam->yaw : 0.15f;
     float pitch = cam ? cam->pitch : -0.15f;
-    float F = 215.0f * (fb->settings.fov_scale > 0.1f ? fb->settings.fov_scale : 1.0f);
+    float F = 215.0f * (fb->settings.fov_scale > 0.1f ? fb->settings.fov_scale : 1.0f)
+            * ((float)fb->w / (float)FB_W);
     float horizon_y = (float)fb->h * 0.5f + sinf(pitch) * F / fmaxf(0.25f, cosf(pitch));
 
     for (int y = 0; y < fb->h; y++) {
@@ -463,11 +483,30 @@ float fb_depth_at(const FB *fb, int x, int y) {
 /* ---------- scanline perspective-correct PS1.5 triangle rasterizer ---- */
 typedef struct {
     float x, y, iz, uz, vz, lr, lg, lb;
+    float wxz, wyz, wzz;        /* world pos premultiplied by 1/z */
+    float nx, ny, nz;           /* world normal (screen-linear interp) */
 } RVert;
 
 static const float INV_SPAN[9] = {
     0.0f, 1.0f, 0.5f, 1.0f / 3.0f, 0.25f, 0.2f, 1.0f / 6.0f, 1.0f / 7.0f, 0.125f
 };
+
+/* Squared distance from point p to segment a-b. The world positions along
+ * one scanline of a planar triangle lie on a straight 3D line, so testing
+ * a light against the span's end-to-end segment exactly decides whether
+ * that light can reach any pixel of the span. */
+static float seg_dist2(V3 a, V3 b, V3 p) {
+    V3 ab = v3_sub(b, a);
+    float len2 = v3_dot(ab, ab);
+    float t = 0.0f;
+    if (len2 > 1e-12f) {
+        t = v3_dot(v3_sub(p, a), ab) / len2;
+        t = clampf(t, 0.0f, 1.0f);
+    }
+    V3 q = v3_add(a, v3_scale(ab, t));
+    V3 d = v3_sub(p, q);
+    return v3_dot(d, d);
+}
 
 static inline int ceil_subpix(float v) {
     return (int)ceilf(v - 0.5f);
@@ -506,11 +545,14 @@ void raster_tri_ex(FB *fb, SVertEx a, SVertEx b, SVertEx c,
 
     RVert rv[3] = {
         { a.x, a.y, aiz, affine ? a.u : a.u * aiz, affine ? a.v : a.v * aiz,
-          a.lr * 128.0f, a.lg * 128.0f, a.lb * 128.0f },
+          a.lr * 128.0f, a.lg * 128.0f, a.lb * 128.0f,
+          a.wx * aiz, a.wy * aiz, a.wz * aiz, a.nx, a.ny, a.nz },
         { b.x, b.y, biz, affine ? b.u : b.u * biz, affine ? b.v : b.v * biz,
-          b.lr * 128.0f, b.lg * 128.0f, b.lb * 128.0f },
+          b.lr * 128.0f, b.lg * 128.0f, b.lb * 128.0f,
+          b.wx * biz, b.wy * biz, b.wz * biz, b.nx, b.ny, b.nz },
         { c.x, c.y, ciz, affine ? c.u : c.u * ciz, affine ? c.v : c.v * ciz,
-          c.lr * 128.0f, c.lg * 128.0f, c.lb * 128.0f }
+          c.lr * 128.0f, c.lg * 128.0f, c.lb * 128.0f,
+          c.wx * ciz, c.wy * ciz, c.wz * ciz, c.nx, c.ny, c.nz }
     };
 
     /* Constant planar gradients across the entire triangle */
@@ -526,6 +568,12 @@ void raster_tri_ex(FB *fb, SVertEx a, SVertEx b, SVertEx c,
     float dlr_dx = GRAD_X(lr), dlr_dy = GRAD_Y(lr);
     float dlg_dx = GRAD_X(lg), dlg_dy = GRAD_Y(lg);
     float dlb_dx = GRAD_X(lb), dlb_dy = GRAD_Y(lb);
+    float dwxz_dx = GRAD_X(wxz), dwxz_dy = GRAD_Y(wxz);
+    float dwyz_dx = GRAD_X(wyz), dwyz_dy = GRAD_Y(wyz);
+    float dwzz_dx = GRAD_X(wzz), dwzz_dy = GRAD_Y(wzz);
+    float dnx_dx = GRAD_X(nx), dnx_dy = GRAD_Y(nx);
+    float dny_dx = GRAD_X(ny), dny_dy = GRAD_Y(ny);
+    float dnz_dx = GRAD_X(nz), dnz_dy = GRAD_Y(nz);
     #undef GRAD_X
     #undef GRAD_Y
 
@@ -544,9 +592,16 @@ void raster_tri_ex(FB *fb, SVertEx a, SVertEx b, SVertEx c,
     int fogg_p = fog_i * fog_g;
     int fogb_p = fog_i * fog_b;
 
+    /* Per-pixel lighting (modern tier): evaluated in the general path.
+     * Additive/subtractive effect blends keep their authored vertex
+     * intensity; RF_UNLIT surfaces are emissive by definition. */
+    bool pp_light = (fb->settings.perpixel_light && g_pp_rig != NULL &&
+                     !(flags & RF_UNLIT) &&
+                     blend != BLEND_ADD && blend != BLEND_SUB);
+
     bool can_asm_tex = (tex == NULL && white_tex_ready) ||
                        (tex != NULL && tw == 64 && th == 64);
-    bool fast_asm64 = (can_asm_tex && !affine &&
+    bool fast_asm64 = (can_asm_tex && !affine && !pp_light &&
                        fb->settings.dither_mode == DITHER_BAYER555 &&
                        fb->settings.filter_mode == FILTER_POINT);
     const uint32_t *asm_tex = tex ? tex : WHITE_TEX64;
@@ -599,6 +654,39 @@ void raster_tri_ex(FB *fb, SVertEx a, SVertEx b, SVertEx c,
             float lr = origin.lr + dlr_dx * sdx + dlr_dy * sdy;
             float lg = origin.lg + dlg_dx * sdx + dlg_dy * sdy;
             float lb = origin.lb + dlb_dx * sdx + dlb_dy * sdy;
+            float wxz = origin.wxz + dwxz_dx * sdx + dwxz_dy * sdy;
+            float wyz = origin.wyz + dwyz_dx * sdx + dwyz_dy * sdy;
+            float wzz = origin.wzz + dwzz_dx * sdx + dwzz_dy * sdy;
+            float pnx = origin.nx + dnx_dx * sdx + dnx_dy * sdy;
+            float pny = origin.ny + dny_dx * sdx + dny_dy * sdy;
+            float pnz = origin.nz + dnz_dx * sdx + dnz_dy * sdy;
+
+            /* Span light culling for the per-pixel path: a light whose
+             * range never reaches this span's world segment contributes
+             * exactly zero to every pixel in it — skip it per pixel. */
+            uint32_t pp_pmask = ~0u, pp_smask = ~0u;
+            if (pp_light) {
+                float n_span = (float)(ix1 - ix0);
+                float iz_e = iz + diz_dx * n_span;
+                float z_s = 1.0f / fmaxf(iz, 1e-6f);
+                float z_e = 1.0f / fmaxf(iz_e, 1e-6f);
+                V3 wa = v3(wxz * z_s, wyz * z_s, wzz * z_s);
+                V3 wb = v3((wxz + dwxz_dx * n_span) * z_e,
+                           (wyz + dwyz_dx * n_span) * z_e,
+                           (wzz + dwzz_dx * n_span) * z_e);
+                pp_pmask = 0;
+                pp_smask = 0;
+                for (int i = 0; i < g_pp_rig->nlights && i < 32; i++) {
+                    const PointLight *L = &g_pp_rig->lights[i];
+                    if (seg_dist2(wa, wb, L->pos) < L->range * L->range)
+                        pp_pmask |= (1u << i);
+                }
+                for (int i = 0; i < g_pp_rig->nspots && i < 32; i++) {
+                    const SpotLight *S = &g_pp_rig->spots[i];
+                    if (seg_dist2(wa, wb, S->pos) < S->range * S->range)
+                        pp_smask |= (1u << i);
+                }
+            }
 
             if (fast_asm64) {
                 Span64 sp;
@@ -665,6 +753,8 @@ void raster_tri_ex(FB *fb, SVertEx a, SVertEx b, SVertEx c,
             uint32_t *row_px = fb->px + (size_t)y * (size_t)fb->w;
             float    *row_zb = fb->zb + (size_t)y * (size_t)fb->w;
             bool write_z = (blend == BLEND_OPAQUE);
+            float pp_cache[3] = { 0.0f, 0.0f, 0.0f };
+            int pp_cache_x = -2;
 
             for (int x = ix0; x < ix1; x++) {
                 if (iz > row_zb[x]) {
@@ -738,9 +828,38 @@ void raster_tri_ex(FB *fb, SVertEx a, SVertEx b, SVertEx c,
                     }
                     if (!skip) {
                         if (write_z) row_zb[x] = iz;
-                        int rl = (int)lr; if (rl < 0) rl = 0;
-                        int gl = (int)lg; if (gl < 0) gl = 0;
-                        int bl = (int)lb; if (bl < 0) bl = 0;
+                        float ulr = lr, ulg = lg, ulb = lb;
+                        if (pp_light) {
+                            /* Light is evaluated on horizontal pixel pairs:
+                             * the field is smooth at 1-px scale, so the odd
+                             * pixel reuses its even neighbour's evaluation.
+                             * The interpolated normal is used unnormalized
+                             * (unit at the vertices; length drift across a
+                             * facet is a few percent at most). */
+                            if (x == pp_cache_x + 1 && (x & 1)) {
+                                ulr = pp_cache[0];
+                                ulg = pp_cache[1];
+                                ulb = pp_cache[2];
+                            } else {
+                                float pz = 1.0f / fmaxf(iz, 1e-6f);
+                                V3 wp = v3(wxz * pz, wyz * pz, wzz * pz);
+                                V3 nn = v3(pnx, pny, pnz);
+                                float er, eg, eb;
+                                eval_light_at_masked(g_pp_rig, g_pp_cam, wp, nn,
+                                                     flags, pp_pmask, pp_smask,
+                                                     &er, &eg, &eb);
+                                ulr = er * g_pp_tr * 128.0f;
+                                ulg = eg * g_pp_tg * 128.0f;
+                                ulb = eb * g_pp_tb * 128.0f;
+                                pp_cache[0] = ulr;
+                                pp_cache[1] = ulg;
+                                pp_cache[2] = ulb;
+                                pp_cache_x = x;
+                            }
+                        }
+                        int rl = (int)ulr; if (rl < 0) rl = 0;
+                        int gl = (int)ulg; if (gl < 0) gl = 0;
+                        int bl = (int)ulb; if (bl < 0) bl = 0;
                         int cr = (tr_c * rl) >> 7; if (cr > 255) cr = 255;
                         int cg = (tg_c * gl) >> 7; if (cg > 255) cg = 255;
                         int cb = (tb_c * bl) >> 7; if (cb > 255) cb = 255;
@@ -759,6 +878,8 @@ void raster_tri_ex(FB *fb, SVertEx a, SVertEx b, SVertEx c,
                 }
                 iz += diz_dx; uz += duz_dx; vz += dvz_dx;
                 lr += dlr_dx; lg += dlg_dx; lb += dlb_dx;
+                wxz += dwxz_dx; wyz += dwyz_dx; wzz += dwzz_dx;
+                pnx += dnx_dx; pny += dny_dx; pnz += dnz_dx;
             }
         }
     }
@@ -767,10 +888,13 @@ void raster_tri_ex(FB *fb, SVertEx a, SVertEx b, SVertEx c,
 void raster_tri(FB *fb, SVert a, SVert b, SVert c,
                 const uint32_t *tex, int tw, int th,
                 float tr, float tg, float tb, float fogz) {
+    /* Legacy entry point: SVert carries no world position, so per-pixel
+     * lighting can never apply — make sure no stale context leaks in. */
+    raster_set_light_ctx(NULL, v3(0.0f, 0.0f, 0.0f), 1.0f, 1.0f, 1.0f);
     float fog = clampf(fogz / 70.0f, 0.0f, 0.78f);
-    SVertEx ea = { a.x, a.y, a.z, a.u, a.v, a.light * tr, a.light * tg, a.light * tb };
-    SVertEx eb = { b.x, b.y, b.z, b.u, b.v, b.light * tr, b.light * tg, b.light * tb };
-    SVertEx ec = { c.x, c.y, c.z, c.u, c.v, c.light * tr, c.light * tg, c.light * tb };
+    SVertEx ea = { a.x, a.y, a.z, a.u, a.v, a.light * tr, a.light * tg, a.light * tb, 0, 0, 0, 0, 0, 0 };
+    SVertEx eb = { b.x, b.y, b.z, b.u, b.v, b.light * tr, b.light * tg, b.light * tb, 0, 0, 0, 0, 0, 0 };
+    SVertEx ec = { c.x, c.y, c.z, c.u, c.v, c.light * tr, c.light * tg, c.light * tb, 0, 0, 0, 0, 0, 0 };
     raster_tri_ex(fb, ea, eb, ec, tex, tw, th, BLEND_OPAQUE, RF_DOUBLE_SIDED,
                   fog, 28, 42, 68);
 }
@@ -1056,7 +1180,7 @@ void hud_draw_visor(FB *fb, float yaw, float op_time_s, int ammo,
     raster_rect(fb, bx + 2, by + 42, 4, 2, body_col);
 
     /* 7-Segment Ammo Counter + Curved Magazine Icon */
-    char abuf[8];
+    char abuf[16];
     snprintf(abuf, sizeof abuf, "%d", ammo < 0 ? 0 : ammo);
     int ax = (ammo >= 10) ? 44 : 52;
     raster_7seg(fb, ax, fb->h - 34, 2, abuf, amb_hi);
