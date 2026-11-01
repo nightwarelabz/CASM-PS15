@@ -59,10 +59,24 @@ static float turn_toward(float cur, float target, float max_step) {
 
 static uint32_t present_buf[960 * 540];
 static void present(Plat *plat, const FB *fb) {
-    if (fb->settings.crt_scanlines)
+    if (fb->w == 960 && fb->h == 540) {
+        /* Modern tier: the framebuffer already is the 960x540 canvas —
+         * present 1:1 (CRT mode shades odd rows in place). */
+        memcpy(present_buf, fb->px, sizeof present_buf);
+        if (fb->settings.crt_scanlines) {
+            for (int y = 1; y < 540; y += 2) {
+                uint32_t *row = present_buf + (size_t)y * 960u;
+                for (int x = 0; x < 960; x++) {
+                    uint32_t p = row[x];
+                    row[x] = p - ((p >> 2) & 0x003F3F3Fu);
+                }
+            }
+        }
+    } else if (fb->settings.crt_scanlines) {
         ps15_upscale2x_crt(present_buf, fb->px, fb->w, fb->h);
-    else
+    } else {
         ps15_upscale2x(present_buf, fb->px, fb->w, fb->h);
+    }
     plat_present(plat, present_buf);
 }
 
@@ -95,7 +109,7 @@ int main(int argc, char **argv) {
 
     GreyportScene sc;
     greyport_init(&sc);
-    FB *fb = fb_new(FB_W, FB_H);
+    FB *fb = fb_new(FB_MODERN_W, FB_MODERN_H);
     Humanoid oper    = humanoid_new();
     Humanoid soldier = humanoid_guard_new();
     MechaMesh mmesh  = mecha_mesh_new();
@@ -570,7 +584,7 @@ int main(int argc, char **argv) {
 
         /* Precision over-the-shoulder reticle + dynamic hitmarker */
         if (!showcase_front) {
-            int cx = FB_W / 2, cy = FB_H / 2;
+            int cx = fb->w / 2, cy = fb->h / 2;
             int gap = aiming ? 3 : 5;
             uint32_t rc = aiming ? 0xffbe3cu : 0x94a8c8u;
             raster_rect(fb, cx - gap - 3, cy, 3, 1, rc);
@@ -601,7 +615,7 @@ int main(int argc, char **argv) {
             snprintf(obj_line, sizeof obj_line, "EXTRACT: WEST BARGE!");
         raster_text(fb, 10, 8, obj_line, n_hacked == 2 ? 0x68f0a8u : 0xffbe3cu);
         if (banner_t > 0.0f)
-            raster_text(fb, FB_W / 2 - (int)strlen(banner_msg) * 3, 33, banner_msg, 0xffd468u);
+            raster_text(fb, fb->w / 2 - (int)strlen(banner_msg) * 3, 33, banner_msg, 0xffd468u);
 
         /* Agency Handler Debrief Dossier Overlay (M / 8 or on Extraction) */
         if (show_dossier) {
@@ -640,7 +654,7 @@ int main(int argc, char **argv) {
                      GFX_NAMES[fb->settings.profile],
                      fb->settings.filter_mode == FILTER_BILINEAR ? "BILIN" : "POINT",
                      DAC_NAMES[fb->settings.dither_mode]);
-            raster_text(fb, 76, FB_H - 9, line, 0x7c92b4u);
+            raster_text(fb, 76, fb->h - 9, line, 0x7c92b4u);
         }
 
         last_render_ms = (float)((now_s() - r0) * 1000.0);

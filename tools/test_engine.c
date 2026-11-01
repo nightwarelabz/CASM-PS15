@@ -181,9 +181,9 @@ static void test_raster_and_blends(void) {
     CHECK(fb_depth_at(fb, 32, 32) > 1e8f, "cleared 1/z depth reports far plane");
 
     /* Back-facing triangle (area < 0) is culled unless RF_DOUBLE_SIDED or RF_MIRROR_Y */
-    SVertEx a = { 10, 10, 5.0f, 0, 0, 1, 1, 1 };
-    SVertEx b = { 50, 10, 5.0f, 1, 0, 1, 1, 1 };
-    SVertEx c = { 10, 50, 5.0f, 0, 1, 1, 1, 1 };
+    SVertEx a = { 10, 10, 5.0f, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0 };
+    SVertEx b = { 50, 10, 5.0f, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0 };
+    SVertEx c = { 10, 50, 5.0f, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0 };
     raster_tri_ex(fb, a, c, b, NULL, 0, 0, BLEND_OPAQUE, RF_NONE, 0, 0, 0, 0);
     CHECK(fb->stats.tris_drawn == 0 && fb->stats.tris_culled == 1,
           "back-facing triangle culled cleanly");
@@ -199,9 +199,9 @@ static void test_raster_and_blends(void) {
     CHECK(fabsf(fb_depth_at(fb, 18, 18) - 5.0f) < 0.05f, "1/z depth stored accurately");
 
     uint32_t base_px = fb->px[18 * FB_W + 18];
-    SVertEx sa = { 10, 10, 4.9f, 0, 0, 0.5f, 0.5f, 0.5f };
-    SVertEx sb = { 50, 10, 4.9f, 1, 0, 0.5f, 0.5f, 0.5f };
-    SVertEx sc_v = { 10, 50, 4.9f, 0, 1, 0.5f, 0.5f, 0.5f };
+    SVertEx sa = { 10, 10, 4.9f, 0, 0, 0.5f, 0.5f, 0.5f, 0, 0, 0, 0, 0, 0 };
+    SVertEx sb = { 50, 10, 4.9f, 1, 0, 0.5f, 0.5f, 0.5f, 0, 0, 0, 0, 0, 0 };
+    SVertEx sc_v = { 10, 50, 4.9f, 0, 1, 0.5f, 0.5f, 0.5f, 0, 0, 0, 0, 0, 0 };
     raster_tri_ex(fb, sa, sb, sc_v, NULL, 0, 0, BLEND_SUB, RF_NONE, 0, 0, 0, 0);
     CHECK(fb->px[18 * FB_W + 18] < base_px, "PS1 BLEND_SUB darkens underlying surface");
     CHECK(fabsf(fb_depth_at(fb, 18, 18) - 5.0f) < 0.05f,

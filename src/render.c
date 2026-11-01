@@ -8,14 +8,19 @@
 #define NEAR_Z    0.22f
 
 static inline float focal_of(const FB *fb) {
+    /* Focal length is in pixels: scale with the internal resolution so the
+     * field of view is identical at the 480-wide PS1.5 tier and the
+     * 960-wide modern tier. */
+    float res = fb ? ((float)fb->w / (float)FB_W) : 1.0f;
     return (fb && fb->settings.fov_scale > 0.1f)
-         ? (FOCAL_LEN * fb->settings.fov_scale)
-         : FOCAL_LEN;
+         ? (FOCAL_LEN * fb->settings.fov_scale * res)
+         : (FOCAL_LEN * res);
 }
 
 /* ---------- per-vertex RGB Gouraud + wet specular + Fresnel rim ------- */
-static void light_at(const LightRig *rig, V3 cam_pos, V3 wp, V3 n, uint32_t flags,
-                     float *lr, float *lg, float *lb) {
+static void eval_light_core(const LightRig *rig, V3 cam_pos, V3 wp, V3 n,
+                            uint32_t flags, uint32_t pmask, uint32_t smask,
+                            float *lr, float *lg, float *lb) {
     if (!rig) { *lr = *lg = *lb = 1.0f; return; }
 
     /* Hemisphere sky-to-ground ambient + cool directional moonlight */
@@ -60,6 +65,7 @@ static void light_at(const LightRig *rig, V3 cam_pos, V3 wp, V3 n, uint32_t flag
 
     /* Point lights (warm sodium pools, window bounce, practicals + wet specular) */
     for (int i = 0; i < rig->nlights; i++) {
+        if (i < 32 && !(pmask & (1u << i))) continue;   /* span-culled: out of range */
         const PointLight *L = &rig->lights[i];
         V3 to = v3_sub(L->pos, wp);
         float d2 = v3_dot(to, to);
@@ -91,6 +97,7 @@ static void light_at(const LightRig *rig, V3 cam_pos, V3 wp, V3 n, uint32_t flag
 
     /* Directional spotlights (watchtower searchlight, guard flashlight, lamps) */
     for (int i = 0; i < rig->nspots; i++) {
+        if (i < 32 && !(smask & (1u << i))) continue;   /* span-culled: out of range */
         const SpotLight *S = &rig->spots[i];
         V3 to = v3_sub(wp, S->pos);
         float d2 = v3_dot(to, to);
@@ -123,11 +130,22 @@ static void light_at(const LightRig *rig, V3 cam_pos, V3 wp, V3 n, uint32_t flag
     *lr = r; *lg = g; *lb = b;
 }
 
+void eval_light_at(const LightRig *rig, V3 cam_pos, V3 wp, V3 n,
+                   uint32_t flags, float *lr, float *lg, float *lb) {
+    eval_light_core(rig, cam_pos, wp, n, flags, ~0u, ~0u, lr, lg, lb);
+}
+
+void eval_light_at_masked(const LightRig *rig, V3 cam_pos, V3 wp, V3 n,
+                          uint32_t flags, uint32_t pmask, uint32_t smask,
+                          float *lr, float *lg, float *lb) {
+    eval_light_core(rig, cam_pos, wp, n, flags, pmask, smask, lr, lg, lb);
+}
+
 float light_exposure_at(const LightRig *rig, V3 wp) {
     if (!rig) return 0.5f;
     float r0, g0, b0, r1, g1, b1;
-    light_at(rig, wp, v3(wp.x, wp.y + 1.0f, wp.z), v3(0.0f, 1.0f, 0.0f), RF_NONE, &r0, &g0, &b0);
-    light_at(rig, wp, v3(wp.x, wp.y + 1.1f, wp.z), v3(0.0f, 0.3f, 0.95f), RF_NONE, &r1, &g1, &b1);
+    eval_light_at(rig, wp, v3(wp.x, wp.y + 1.0f, wp.z), v3(0.0f, 1.0f, 0.0f), RF_NONE, &r0, &g0, &b0);
+    eval_light_at(rig, wp, v3(wp.x, wp.y + 1.1f, wp.z), v3(0.0f, 0.3f, 0.95f), RF_NONE, &r1, &g1, &b1);
     float lum0 = r0 * 0.35f + g0 * 0.45f + b0 * 0.20f;
     float lum1 = r1 * 0.35f + g1 * 0.45f + b1 * 0.20f;
     float lum = fmaxf(lum0, lum1);
@@ -137,13 +155,16 @@ float light_exposure_at(const LightRig *rig, V3 wp) {
 /* ---------- view-space clipping & PS1.5 screen projection ------------- */
 typedef struct {
     float x, y, z, u, v, lr, lg, lb;
+    float wx, wy, wz, nx, ny, nz;   /* world pos + normal (per-pixel light) */
 } CVert;
 
 static CVert cvert_lerp(CVert a, CVert b, float t) {
     return (CVert){
         lerpf(a.x, b.x, t), lerpf(a.y, b.y, t), lerpf(a.z, b.z, t),
         lerpf(a.u, b.u, t), lerpf(a.v, b.v, t),
-        lerpf(a.lr, b.lr, t), lerpf(a.lg, b.lg, t), lerpf(a.lb, b.lb, t)
+        lerpf(a.lr, b.lr, t), lerpf(a.lg, b.lg, t), lerpf(a.lb, b.lb, t),
+        lerpf(a.wx, b.wx, t), lerpf(a.wy, b.wy, t), lerpf(a.wz, b.wz, t),
+        lerpf(a.nx, b.nx, t), lerpf(a.ny, b.ny, t), lerpf(a.nz, b.nz, t)
     };
 }
 
@@ -164,8 +185,8 @@ static bool sphere_visible(const FB *fb, const Camera *cam, V3 center, float rad
     float vz = sp * d.y + cp * vz0;
     if (vz + radius < NEAR_Z) return false;
     float focal = focal_of(fb);
-    float hx = ((float)FB_W * 0.56f / focal);
-    float hy = ((float)FB_H * 0.56f / focal);
+    float hx = ((float)fb->w * 0.56f / focal);
+    float hy = ((float)fb->h * 0.56f / focal);
     float lim_x = fmaxf(vz, 0.0f) * hx + radius * 1.35f;
     float lim_y = fmaxf(vz, 0.0f) * hy + radius * 1.35f;
     if (fabsf(vx) > lim_x || fabsf(vy) > lim_y) return false;
@@ -188,6 +209,7 @@ static void render_verts(FB *fb, const Camera *cam,
     int fog_b = (rig && rig->fog_dist > 0.0f) ? (int)(rig->fog_b * 255.0f) : 58;
     float fog_dist = (rig && rig->fog_dist > 0.0f) ? rig->fog_dist : 48.0f;
 
+    raster_set_light_ctx(rig, cam->pos, tr, tg, tb);
     for (int t = 0; t < nt; t++) {
         const int idx[3] = { tris[t].a, tris[t].b, tris[t].c };
         CVert in[3];
@@ -205,7 +227,7 @@ static void render_verts(FB *fb, const Camera *cam,
 
             float vr = 1.0f, vg = 1.0f, vb = 1.0f;
             if (!(flags & RF_UNLIT)) {
-                light_at(rig, cam->pos, wp, rn, flags, &vr, &vg, &vb);
+                eval_light_at(rig, cam->pos, wp, rn, flags, &vr, &vg, &vb);
             }
             vr *= tr; vg *= tg; vb *= tb;
 
@@ -214,7 +236,8 @@ static void render_verts(FB *fb, const Camera *cam,
             float vz0 = scam * d.x + ccam * d.z;
             float vy = cp * d.y - sp * vz0;
             float vz = sp * d.y + cp * vz0;
-            in[i] = (CVert){ vx, vy, vz, v->u, v->v, vr, vg, vb };
+            in[i] = (CVert){ vx, vy, vz, v->u, v->v, vr, vg, vb,
+                             wp.x, wp.y, wp.z, rn.x, rn.y, rn.z };
         }
 
         CVert poly[5];
@@ -249,7 +272,9 @@ static void render_verts(FB *fb, const Camera *cam,
                 if (sy_p < (float)fb->h) all_bot = false;
                 sv[i] = (SVertEx){ sx, sy_p, tri3[i]->z,
                                    tri3[i]->u, tri3[i]->v,
-                                   tri3[i]->lr, tri3[i]->lg, tri3[i]->lb };
+                                   tri3[i]->lr, tri3[i]->lg, tri3[i]->lb,
+                                   tri3[i]->wx, tri3[i]->wy, tri3[i]->wz,
+                                   tri3[i]->nx, tri3[i]->ny, tri3[i]->nz };
             }
             if (all_left || all_right || all_top || all_bot) {
                 fb->stats.tris_submitted++;
@@ -320,6 +345,7 @@ void render_mesh_mirror(FB *fb, const Camera *cam, const Mesh *m,
     int fog_b = (rig && rig->fog_dist > 0.0f) ? (int)(rig->fog_b * 255.0f) : 58;
     float fog_dist = (rig && rig->fog_dist > 0.0f) ? rig->fog_dist : 48.0f;
 
+    raster_set_light_ctx(rig, cam->pos, tr, tg, tb);
     for (int t = 0; t < m->nt; t++) {
         const int idx[3] = { m->tris[t].a, m->tris[t].b, m->tris[t].c };
         CVert in[3];
@@ -332,7 +358,7 @@ void render_mesh_mirror(FB *fb, const Camera *cam, const Mesh *m,
 
             V3 rn = v3(cy * v->n.x + sy * v->n.z, v->n.y, -sy * v->n.x + cy * v->n.z);
             float vr = 1.0f, vg = 1.0f, vb = 1.0f;
-            if (!(flags & RF_UNLIT)) light_at(rig, cam->pos, wp, rn, flags, &vr, &vg, &vb);
+            if (!(flags & RF_UNLIT)) eval_light_at(rig, cam->pos, wp, rn, flags, &vr, &vg, &vb);
             vr *= tr; vg *= tg; vb *= tb;
 
             float h_above = fmaxf(0.0f, wp.y - water_y);
@@ -345,7 +371,8 @@ void render_mesh_mirror(FB *fb, const Camera *cam, const Mesh *m,
             float vz0 = scam * d.x + ccam * d.z;
             float vy = cp * d.y - sp * vz0;
             float vz = sp * d.y + cp * vz0;
-            in[i] = (CVert){ vx, vy, vz, v->u, v->v, vr, vg, vb };
+            in[i] = (CVert){ vx, vy, vz, v->u, v->v, vr, vg, vb,
+                             wp.x, wp.y, wp.z, rn.x, rn.y, rn.z };
         }
         if (!any_above) continue;
 
@@ -371,7 +398,9 @@ void render_mesh_mirror(FB *fb, const Camera *cam, const Mesh *m,
                 float sy_p = snap_coord((float)fb->h * 0.5f - tri3[i]->y * focal / tri3[i]->z,
                                         fb->settings.snap_mode);
                 sv[i] = (SVertEx){ sx, sy_p, tri3[i]->z, tri3[i]->u, tri3[i]->v,
-                                   tri3[i]->lr, tri3[i]->lg, tri3[i]->lb };
+                                   tri3[i]->lr, tri3[i]->lg, tri3[i]->lb,
+                                   tri3[i]->wx, tri3[i]->wy, tri3[i]->wz,
+                                   tri3[i]->nx, tri3[i]->ny, tri3[i]->nz };
             }
             float fogz = (sv[0].z + sv[1].z + sv[2].z) * (1.0f / 3.0f);
             float ft = clampf((fogz - 4.0f) / fog_dist, 0.0f, 1.0f);
@@ -633,7 +662,7 @@ void render_viewmodel_ex(FB *fb, const Camera *cam, const Viewmodel *vm,
                 cosf(cam->yaw) * cosf(cam->pitch));
     V3 probe = v3_add(cam->pos, v3_scale(fwd, 0.45f));
     float lr, lg, lb;
-    light_at(rig, cam->pos, probe, v3(0, 0.8f, 0.6f), RF_NONE, &lr, &lg, &lb);
+    eval_light_at(rig, cam->pos, probe, v3(0, 0.8f, 0.6f), RF_NONE, &lr, &lg, &lb);
     lr = fmaxf(lr, 0.34f); lg = fmaxf(lg, 0.36f); lb = fmaxf(lb, 0.46f);
 
     float rec = clampf(recoil, 0.0f, 1.0f);

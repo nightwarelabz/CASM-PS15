@@ -15,21 +15,36 @@
 #include <sys/stat.h>
 
 static int write_ppm(const char *path, const FB *fb, bool crt) {
-    uint32_t *up = crt ? fb_upscale2x_crt(fb) : fb_upscale2x(fb);
+    /* The harness renders at the modern internal tier and writes the
+     * framebuffer exactly as rendered (no upscale pass): what is in the
+     * file is what the engine produced, pixel for pixel. CRT mode shades
+     * odd rows in place with the same quarter-subtract as the 2x CRT path. */
+    size_t npix = (size_t)fb->w * (size_t)fb->h;
+    uint32_t *img = malloc(npix * sizeof(uint32_t));
+    if (!img) return -1;
+    memcpy(img, fb->px, npix * sizeof(uint32_t));
+    if (crt) {
+        for (int y = 1; y < fb->h; y += 2) {
+            uint32_t *row = img + (size_t)y * (size_t)fb->w;
+            for (int x = 0; x < fb->w; x++) {
+                uint32_t p = row[x];
+                row[x] = p - ((p >> 2) & 0x003F3F3Fu);
+            }
+        }
+    }
     FILE *f = fopen(path, "wb");
-    if (!f) { free(up); return -1; }
-    fprintf(f, "P6\n%d %d\n255\n", fb->w * 2, fb->h * 2);
-    size_t npix = (size_t)(fb->w * 2) * (size_t)(fb->h * 2);
+    if (!f) { free(img); return -1; }
+    fprintf(f, "P6\n%d %d\n255\n", fb->w, fb->h);
     unsigned char *rgb = malloc(npix * 3);
     for (size_t i = 0; i < npix; i++) {
-        rgb[i * 3 + 0] = (unsigned char)(up[i] >> 16);
-        rgb[i * 3 + 1] = (unsigned char)(up[i] >> 8);
-        rgb[i * 3 + 2] = (unsigned char)(up[i]);
+        rgb[i * 3 + 0] = (unsigned char)(img[i] >> 16);
+        rgb[i * 3 + 1] = (unsigned char)(img[i] >> 8);
+        rgb[i * 3 + 2] = (unsigned char)(img[i]);
     }
     size_t wr = fwrite(rgb, 1, npix * 3, f);
     free(rgb);
     fclose(f);
-    free(up);
+    free(img);
     return (wr == npix * 3) ? 0 : -1;
 }
 
@@ -59,7 +74,7 @@ int main(int argc, char **argv) {
     Humanoid oper    = humanoid_new();
     Humanoid soldier = humanoid_guard_new();
     MechaMesh mmesh  = mecha_mesh_new();
-    FB *fb = fb_new(FB_W, FB_H);
+    FB *fb = fb_new(FB_MODERN_W, FB_MODERN_H);
     fb_set_profile(fb, GFX_PS2); /* PS2 Emotion Engine GS: TrueColor + subpixel + bilinear */
 
     static const struct {
